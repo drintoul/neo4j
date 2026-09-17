@@ -1,0 +1,19 @@
+# Environment secrets
+.env
+
+# Runtime data and logs
+data/
+logs/
+
+# Node.js build artifacts
+node_modules/
+dist/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
