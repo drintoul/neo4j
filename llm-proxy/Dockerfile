@@ -5,7 +5,7 @@ RUN mkdir -p /app && chown -R node:node /app
 
 WORKDIR /app
 COPY --chown=node:node package*.json ./
-RUN npm install && npm cache clean --force
+RUN npm ci && npm cache clean --force
 
 COPY --chown=node:node . .
 

@@ -1,0 +1,12 @@
+node_modules
+.env
+.env.*
+README.md
+Dockerfile
+.dockerignore
+npm-debug.log*
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
