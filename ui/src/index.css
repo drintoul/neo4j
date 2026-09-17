@@ -184,7 +184,8 @@ main {
 .status {
   position: absolute;
   bottom: 1rem;
-  left: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
   background: var(--bg-panel);
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;
@@ -242,7 +243,7 @@ main {
 
 .sidebar {
   top: 1rem;
-  right: 1rem;
+  left: 1rem;
   width: 280px;
   max-height: calc(100% - 2rem);
   overflow-y: auto;
@@ -305,8 +306,8 @@ main {
 .stats-panel {
   top: 1rem;
   right: 1rem;
-  width: 260px;
-  max-height: calc(40% - 2rem);
+  width: 280px;
+  max-height: calc(75% - 2rem);
 }
 
 .stats-grid {
@@ -338,11 +339,11 @@ main {
 
 .stats-list {
   list-style: none;
-  margin: 0;
+  margin: 0 0 1rem 0;
   padding: 0;
   font-size: 0.75rem;
   overflow-y: auto;
-  max-height: 120px;
+  max-height: 240px;
 }
 
 .stats-list li {
@@ -357,6 +358,37 @@ main {
   border-bottom: none;
 }
 
+.view-tabs {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.25rem;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.25rem;
+  z-index: 10;
+}
+
+.view-tabs button {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.view-tabs button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.view-tabs button.active {
+  background: var(--accent);
+  color: #ffffff;
+}
+
 .history-panel,
 .chat-panel {
   bottom: 1rem;
@@ -365,11 +397,11 @@ main {
 }
 
 .history-panel {
-  right: 1rem;
+  left: 1rem;
 }
 
 .chat-panel {
-  right: 24rem;
+  right: 1rem;
 }
 
 .history-list,

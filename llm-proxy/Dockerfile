@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:20-alpine
+FROM node:20.18.0-alpine
 
 RUN mkdir -p /app && chown -R node:node /app
 

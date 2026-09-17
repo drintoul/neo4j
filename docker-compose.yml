@@ -59,7 +59,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3002/health"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3002/health').then(r=>{if(!r.ok)throw new Error(r.status)}).catch(e=>{process.exit(1)})"
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,7 +94,7 @@ services:
     networks:
       - neo4j-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -112,6 +116,7 @@ services:
       - MCP_MAX_RECORDS=${MCP_MAX_RECORDS}
       - MCP_QUERY_TIMEOUT_MS=${MCP_QUERY_TIMEOUT_MS}
       - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS}
+      - LLM_PROXY_URL=http://llm-proxy:3002
     cap_drop:
       - ALL
     security_opt:
@@ -122,10 +127,16 @@ services:
     depends_on:
       neo4j:
         condition: service_healthy
+      llm-proxy:
+        condition: service_healthy
     networks:
       - neo4j-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3001/').then(r=>{if(!r.ok)throw new Error(r.status)}).catch(e=>{process.exit(1)})"
       interval: 10s
       timeout: 5s
       retries: 5

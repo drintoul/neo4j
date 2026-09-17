@@ -20,6 +20,7 @@ const PORT = process.env.MCP_PORT || 3001
 const MAX_RECORDS = parseInt(process.env.MCP_MAX_RECORDS || '100', 10)
 const QUERY_TIMEOUT_MS = parseInt(process.env.MCP_QUERY_TIMEOUT_MS || '30000', 10)
 const ALLOWED_ORIGINS = (process.env.MCP_ALLOWED_ORIGINS || '').split(',').filter(Boolean)
+const LLM_PROXY_URL = process.env.LLM_PROXY_URL || 'http://llm-proxy:3002'
 
 const driver = neo4j.driver(
   NEO4J_URI,
@@ -268,6 +269,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'generate_cypher',
+        description: 'Translate an English question into a read-only Cypher query using a local Ollama LLM',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            question: {
+              type: 'string',
+              description: 'The natural-language question to translate into Cypher',
+            },
+          },
+          required: ['question'],
+        },
+      },
+      {
         name: 'get_neighbors',
         description: 'Get neighbors of a node by internal Neo4j ID',
         inputSchema: {
@@ -327,6 +342,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         {
           type: 'text',
           text: JSON.stringify(sanitizeRecords(records), null, 2),
+        },
+      ],
+    }
+  }
+
+  if (name === 'generate_cypher') {
+    if (typeof args.question !== 'string' || !args.question.trim()) {
+      throw new Error('Missing or invalid question')
+    }
+    const response = await fetch(`${LLM_PROXY_URL}/generate-cypher`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: args.question.trim() }),
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`LLM proxy responded ${response.status}: ${text}`)
+    }
+    const data = await response.json()
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ cypher: data.cypher, model: data.model }, null, 2),
         },
       ],
     }

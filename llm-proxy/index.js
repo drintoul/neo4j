@@ -61,7 +61,13 @@ Rules:
 - Use read-only clauses only (MATCH, RETURN, WHERE, LIMIT, ORDER BY, COUNT, etc.).
 - Do not use CREATE, MERGE, DELETE, SET, REMOVE, or DROP.
 - Prefer concise queries. Limit results to at most 100 rows when appropriate.
-- When the question asks to show, find, or visualize nodes and relationships, always RETURN all matched node and relationship variables directly so they can be rendered as a graph (e.g., MATCH (p:Person)-[w:WORKS_AT]->(c:Company) ... RETURN p, w, c). Never return only scalar property values in such cases.
+- CRITICAL: When a question mentions a name, title, or any string value, never use exact equality (= or {property: 'value'}) for that string. Always use case-insensitive partial matching so short or inexact input matches the real value, e.g., "WHERE toLower(c.name) CONTAINS toLower('Acme')". The user may say "Acme" when the database value is "Acme Corp".
+- For any question about connected entities, visualization, or exploration, always RETURN both nodes and relationships so the graph can be rendered.
+- Do NOT return only scalar property values (e.g., RETURN p.name) unless the user explicitly asks for a count or specific value.
+- Examples:
+  - WRONG: MATCH (p:Person)-[w:WORKS_AT]->(c:Company {name: 'Acme'}) RETURN p, w, c
+  - CORRECT: "show me all people who work at Acme" -> MATCH (p:Person)-[w:WORKS_AT]->(c:Company) WHERE toLower(c.name) CONTAINS toLower('Acme') RETURN p, w, c LIMIT 100
+  - "show the entire graph" -> MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100
 - If the question cannot be translated, return: "MATCH (n) RETURN n LIMIT 0"
 
 Question: ${question}

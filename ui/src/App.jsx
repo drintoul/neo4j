@@ -2,13 +2,9 @@ import React, { useState, useEffect, useRef } from 'react'
 import neo4j from 'neo4j-driver'
 import cytoscape from 'cytoscape'
 
-const DEFAULT_QUERY = 'MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 50'
-
-const LABEL_COLORS = {
-  Person: '#38bdf8',
-  Company: '#a78bfa',
-  City: '#fbbf24',
-}
+const DEFAULT_QUERY = 'MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100'
+const HISTORY_KEY = 'neo4j_query_history'
+const THEME_KEY = 'neo4j_theme'
 
 function stringHash(str) {
   let h = 0
@@ -19,7 +15,6 @@ function stringHash(str) {
 }
 
 function labelColor(label) {
-  if (LABEL_COLORS[label]) return LABEL_COLORS[label]
   const h = Math.abs(stringHash(label)) % 360
   return `hsl(${h}, 70%, 60%)`
 }
@@ -35,17 +30,45 @@ function getConfig() {
   }
 }
 
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function saveHistory(items) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 50)))
+  } catch {}
+}
+
 function App() {
   const [query, setQuery] = useState(DEFAULT_QUERY)
-  const [nlQuery, setNlQuery] = useState('')
   const [status, setStatus] = useState('Ready')
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
   const [tableData, setTableData] = useState(null)
+  const [hasGraph, setHasGraph] = useState(false)
+  const [viewMode, setViewMode] = useState('graph')
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [theme, setTheme] = useState(() => {
+    if (typeof window === 'undefined') return 'dark'
+    return window.localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'
+  })
+  const [stats, setStats] = useState(null)
+  const [showStats, setShowStats] = useState(false)
+  const [history, setHistory] = useState(() => loadHistory())
+  const [showHistory, setShowHistory] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatInput, setChatInput] = useState('')
+  const [chatMessages, setChatMessages] = useState([])
   const cyRef = useRef(null)
   const containerRef = useRef(null)
+  const chatEndRef = useRef(null)
 
   const config = getConfig()
   const driver = useRef(
@@ -56,6 +79,14 @@ function App() {
   )
 
   useEffect(() => {
+    document.body.classList.toggle('light', theme === 'light')
+    try {
+      localStorage.setItem(THEME_KEY, theme)
+    } catch {}
+  }, [theme])
+
+  useEffect(() => {
+    fetchStats()
     return () => {
       driver.current.close()
       if (cyRef.current) {
@@ -63,6 +94,10 @@ function App() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages])
 
   function serializeValue(value) {
     if (neo4j.isNode(value)) {
@@ -77,29 +112,68 @@ function App() {
     return value
   }
 
+  async function fetchStats() {
+    const session = driver.current.session()
+    const next = { nodeCount: 0, edgeCount: 0, labels: [], relationshipTypes: [] }
+    try {
+      const nodesResult = await session.run('MATCH (n) RETURN count(n) AS count')
+      next.nodeCount = nodesResult.records[0]?.get('count').toInt() || 0
+
+      const edgesResult = await session.run('MATCH ()-[r]->() RETURN count(r) AS count')
+      next.edgeCount = edgesResult.records[0]?.get('count').toInt() || 0
+
+      const labelsResult = await session.run('CALL db.labels() YIELD label RETURN label ORDER BY label')
+      next.labels = labelsResult.records.map((r) => r.get('label'))
+
+      const relTypesResult = await session.run('CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType ORDER BY relationshipType')
+      next.relationshipTypes = relTypesResult.records.map((r) => r.get('relationshipType'))
+    } catch (err) {
+      console.error('Failed to fetch stats:', err)
+    } finally {
+      await session.close()
+    }
+    setStats(next)
+  }
+
+  function addHistoryItem(item) {
+    setHistory((prev) => {
+      const next = [item, ...prev.filter((i) => i.text !== item.text || i.type !== item.type)]
+      saveHistory(next)
+      return next
+    })
+  }
+
+  function clearHistory() {
+    setHistory([])
+    saveHistory([])
+  }
+
   const runQuery = async (q) => {
     setLoading(true)
     setError(null)
     setStatus('Running query...')
     setSelected(null)
     setTableData(null)
+    setHasGraph(false)
+    setViewMode('graph')
 
     const session = driver.current.session()
     try {
       const result = await session.run(q)
-      const hasGraph = renderGraph(result.records)
-      if (!hasGraph) {
-        setTableData(
-          result.records.map((record) => {
-            const row = {}
-            record.keys.forEach((key) => {
-              row[key] = serializeValue(record.get(key))
-            })
-            return row
-          })
-        )
-      }
+      const rows = result.records.map((record) => {
+        const row = {}
+        record.keys.forEach((key) => {
+          row[key] = serializeValue(record.get(key))
+        })
+        return row
+      })
+      const graphRendered = renderGraph(result.records)
+      setTableData(rows)
+      setHasGraph(graphRendered)
+      setViewMode(graphRendered ? 'graph' : 'table')
       setStatus(`Loaded ${result.records.length} records`)
+      addHistoryItem({ type: 'cypher', text: q, timestamp: Date.now() })
+      fetchStats()
     } catch (err) {
       setError(err.message)
       setStatus('Query failed')
@@ -109,31 +183,72 @@ function App() {
     }
   }
 
-  const generateCypher = async (e) => {
-    e.preventDefault()
-    if (!nlQuery.trim()) return
+  const generateCypher = async (question, { silent = false } = {}) => {
+    if (!question.trim()) return null
     setGenerating(true)
-    setError(null)
-    setStatus('Generating Cypher from natural language...')
+    if (!silent) setStatus('Generating Cypher from natural language...')
     try {
       const response = await fetch('/api/llm/generate-cypher', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: nlQuery.trim() }),
+        body: JSON.stringify({ query: question.trim() }),
       })
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(body.error || `HTTP ${response.status}`)
       }
       const data = await response.json()
-      setQuery(data.cypher || '')
-      setStatus(`Generated Cypher using ${data.model || 'LLM'}`)
+      if (!silent) {
+        setQuery(data.cypher || '')
+        setStatus(`Generated Cypher using ${data.model || 'LLM'}`)
+      }
+      return data
     } catch (err) {
-      setError(err.message)
-      setStatus('Cypher generation failed')
+      if (!silent) {
+        setError(err.message)
+        setStatus('Cypher generation failed')
+      }
+      throw err
     } finally {
       setGenerating(false)
     }
+  }
+
+  const sendChatMessage = async (e) => {
+    e.preventDefault()
+    const text = chatInput.trim()
+    if (!text) return
+    setChatInput('')
+    const userMessage = { role: 'user', content: text }
+    setChatMessages((prev) => [...prev, userMessage])
+    try {
+      const data = await generateCypher(text, { silent: true })
+      const assistantMessage = {
+        role: 'assistant',
+        content: data.cypher,
+        cypher: data.cypher,
+        model: data.model,
+      }
+      setChatMessages((prev) => [...prev, assistantMessage])
+      addHistoryItem({ type: 'nl', text, cypher: data.cypher, timestamp: Date.now() })
+    } catch (err) {
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: err.message, error: true }])
+    }
+  }
+
+  const runFromHistory = (item) => {
+    if (item.type === 'cypher') {
+      setQuery(item.text)
+      runQuery(item.text)
+    } else {
+      setQuery(item.cypher || '')
+      if (item.cypher) runQuery(item.cypher)
+    }
+  }
+
+  const runChatCypher = (cypher) => {
+    setQuery(cypher)
+    runQuery(cypher)
   }
 
   const renderGraph = (records) => {
@@ -285,27 +400,106 @@ function App() {
             {loading ? 'Running...' : 'Run'}
           </button>
         </form>
-        <form className="nl-bar" onSubmit={generateCypher}>
-          <input
-            type="text"
-            value={nlQuery}
-            onChange={(e) => setNlQuery(e.target.value)}
-            placeholder="Ask in English..."
-          />
-          <button type="submit" disabled={generating}>
-            {generating ? 'Generating...' : 'Generate Cypher'}
+        <div className="header-actions">
+          <button
+            type="button"
+            className={`icon-button ${chatOpen ? 'active' : ''}`}
+            onClick={() => setChatOpen((s) => !s)}
+            title="LLM chat"
+          >
+            Chat
           </button>
-        </form>
+          <button
+            type="button"
+            className={`icon-button ${showHistory ? 'active' : ''}`}
+            onClick={() => setShowHistory((s) => !s)}
+            title="Query history"
+          >
+            History
+          </button>
+          <button
+            type="button"
+            className={`icon-button ${showStats ? 'active' : ''}`}
+            onClick={() => setShowStats((s) => !s)}
+            title="Graph statistics"
+          >
+            Stats
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            title="Toggle theme"
+          >
+            {theme === 'dark' ? 'Light' : 'Dark'}
+          </button>
+        </div>
       </header>
       <main>
-        <div ref={containerRef} className="graph-canvas" />
+        {hasGraph && tableData && tableData.length > 0 && (
+          <div className="view-tabs">
+            <button
+              type="button"
+              className={viewMode === 'graph' ? 'active' : ''}
+              onClick={() => setViewMode('graph')}
+            >
+              Graph
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'table' ? 'active' : ''}
+              onClick={() => setViewMode('table')}
+            >
+              Table
+            </button>
+          </div>
+        )}
+        <div
+          ref={containerRef}
+          className="graph-canvas"
+          style={{ display: viewMode === 'graph' ? 'block' : 'none' }}
+        />
         {loading && <div className="loading">Loading graph...</div>}
         <div className={`status ${error ? 'error' : ''}`}>
           {error ? `Error: ${error}` : status}
           <span className="help-text"> — Click nodes/edges for details. Drag to pan, scroll to zoom.</span>
         </div>
-        {tableData && tableData.length > 0 && (
-          <div className="table-panel">
+        {showStats && stats && (
+          <div className="panel stats-panel">
+            <button className="panel-close" onClick={() => setShowStats(false)}>
+              x
+            </button>
+            <h3>Graph Statistics</h3>
+            <div className="stats-grid">
+              <div className="stat-card">
+                <div className="stat-value">{stats.nodeCount}</div>
+                <div className="stat-label">Nodes</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-value">{stats.edgeCount}</div>
+                <div className="stat-label">Edges</div>
+              </div>
+            </div>
+            <h4>Labels</h4>
+            <ul className="stats-list">
+              {stats.labels.map((label) => (
+                <li key={label}>
+                  <span>{label}</span>
+                </li>
+              ))}
+            </ul>
+            <h4>Relationships</h4>
+            <ul className="stats-list">
+              {stats.relationshipTypes.map((type) => (
+                <li key={type}>
+                  <span>{type}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {viewMode === 'table' && tableData && tableData.length > 0 && (
+          <div className="panel table-panel">
             <h3>Query Results</h3>
             <div className="table-scroll">
               <table>
@@ -333,8 +527,78 @@ function App() {
             </div>
           </div>
         )}
+        {showHistory && (
+          <div className="panel history-panel">
+            <button className="panel-close" onClick={() => setShowHistory(false)}>
+              x
+            </button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <h3 style={{ margin: 0 }}>Query History</h3>
+              <button className="panel-close" style={{ position: 'static' }} onClick={clearHistory}>
+                Clear
+              </button>
+            </div>
+            {history.length === 0 ? (
+              <div className="empty-state">No queries yet.</div>
+            ) : (
+              <ul className="history-list">
+                {history.map((item, idx) => (
+                  <li
+                    key={idx}
+                    onClick={() => runFromHistory(item)}
+                    title={item.cypher || item.text}
+                  >
+                    {item.type === 'nl' ? 'Q: ' : ''}
+                    {item.text.length > 40 ? item.text.slice(0, 40) + '...' : item.text}
+                    {item.cypher && <small>{item.cypher.length > 60 ? item.cypher.slice(0, 60) + '...' : item.cypher}</small>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {chatOpen && (
+          <div className="panel chat-panel">
+            <button className="panel-close" onClick={() => setChatOpen(false)}>
+              x
+            </button>
+            <h3>LLM Chat</h3>
+            <div className="chat-messages">
+              {chatMessages.length === 0 ? (
+                <div className="empty-state">Ask a question in plain English.</div>
+              ) : (
+                chatMessages.map((msg, idx) => (
+                  <div key={idx} className={`chat-message ${msg.role}`}>
+                    <strong>{msg.role === 'user' ? 'You' : 'Assistant'}</strong>
+                    {msg.cypher ? (
+                      <>
+                        <pre>{msg.content}</pre>
+                        <button onClick={() => runChatCypher(msg.cypher)}>Run Cypher</button>
+                      </>
+                    ) : (
+                      <span>{msg.content}</span>
+                    )}
+                  </div>
+                ))
+              )}
+              <div ref={chatEndRef} />
+            </div>
+            <form className="chat-input" onSubmit={sendChatMessage}>
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Ask in English..."
+                disabled={generating}
+              />
+              <button type="submit" disabled={generating || !chatInput.trim()}>
+                {generating ? '...' : 'Send'}
+              </button>
+            </form>
+          </div>
+        )}
         {selected && (
-          <div className="sidebar">
+          <div className="panel sidebar">
             <h3>{selected.type}: {selected.label}</h3>
             <pre>{JSON.stringify(selected.properties, null, 2)}</pre>
           </div>
