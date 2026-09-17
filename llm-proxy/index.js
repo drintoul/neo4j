@@ -37,18 +37,41 @@ async function fetchSchema() {
       runReadQuery('CALL db.relationshipTypes() YIELD relationshipType RETURN collect(relationshipType) AS types'),
       runReadQuery('CALL db.propertyKeys() YIELD propertyKey RETURN collect(propertyKey) AS keys'),
     ])
+    const labelProperties = await runReadQuery(`
+      MATCH (n)
+      WITH n LIMIT 200
+      UNWIND labels(n) AS label
+      UNWIND keys(n) AS key
+      RETURN label, collect(DISTINCT key) AS keys
+    `)
+    const relationshipProperties = await runReadQuery(`
+      MATCH ()-[r]->()
+      WITH r LIMIT 200
+      WITH type(r) AS type, keys(r) AS keys
+      UNWIND keys AS key
+      RETURN type, collect(DISTINCT key) AS keys
+    `)
     return {
       labels: labels[0]?.labels || [],
       relationshipTypes: types[0]?.types || [],
       propertyKeys: keys[0]?.keys || [],
+      labelProperties: Object.fromEntries(labelProperties.map((r) => [r.label, r.keys])),
+      relationshipProperties: Object.fromEntries(relationshipProperties.map((r) => [r.type, r.keys])),
     }
   } catch (err) {
     console.error('Failed to fetch schema:', err.message)
-    return { labels: [], relationshipTypes: [], propertyKeys: [] }
+    return { labels: [], relationshipTypes: [], propertyKeys: [], labelProperties: {}, relationshipProperties: {} }
   }
 }
 
 function buildPrompt(question, schema) {
+  const labelProps = Object.entries(schema.labelProperties || {})
+    .map(([label, keys]) => `- ${label}: ${keys.join(', ') || 'none'}`)
+    .join('\n')
+  const relProps = Object.entries(schema.relationshipProperties || {})
+    .map(([type, keys]) => `- ${type}: ${keys.join(', ') || 'none'}`)
+    .join('\n')
+
   return `You are a Neo4j Cypher query generator. Translate the following English question into a single, valid read-only Cypher query for a Neo4j database.
 
 Database schema:
@@ -56,12 +79,21 @@ Database schema:
 - Relationship types: ${schema.relationshipTypes.join(', ') || 'unknown'}
 - Property keys: ${schema.propertyKeys.join(', ') || 'unknown'}
 
+Node label properties:
+${labelProps || '- none known'}
+
+Relationship type properties:
+${relProps || '- none known'}
+
 Rules:
 - Return only the Cypher query, with no explanation, no markdown code fences, and no extra text.
 - Use read-only clauses only (MATCH, RETURN, WHERE, LIMIT, ORDER BY, COUNT, etc.).
 - Do not use CREATE, MERGE, DELETE, SET, REMOVE, or DROP.
 - Prefer concise queries. Limit results to at most 100 rows when appropriate.
 - CRITICAL: When a question mentions a name, title, or any string value, never use exact equality (= or {property: 'value'}) for that string. Always use case-insensitive partial matching so short or inexact input matches the real value, e.g., "WHERE toLower(c.name) CONTAINS toLower('Acme')". The user may say "Acme" when the database value is "Acme Corp".
+- Do NOT invent property names. You MUST use only the exact property names listed under each node label and relationship type above.
+- If the user's description does not match a known property, default to the 'name' property for entity/person names.
+- Do NOT use datetime functions (duration(), date(), datetime(), etc.) unless the schema explicitly includes a date/datetime property for that label/type. If a property could be a date but you are unsure, treat it as a string and do not compute with it.
 - For any question about connected entities, visualization, or exploration, always RETURN both nodes and relationships so the graph can be rendered.
 - Do NOT return only scalar property values (e.g., RETURN p.name) unless the user explicitly asks for a count or specific value.
 - Examples:
@@ -89,6 +121,15 @@ app.use(express.json({ limit: '1mb' }))
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' })
+})
+
+app.get('/schema', async (_req, res) => {
+  try {
+    const schema = await fetchSchema()
+    res.json(schema)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 app.post('/generate-cypher', async (req, res) => {

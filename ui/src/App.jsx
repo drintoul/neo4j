@@ -64,6 +64,8 @@ function App() {
   const [showStats, setShowStats] = useState(false)
   const [filters, setFilters] = useState({ labels: [], relTypes: [], visibleLabels: new Set(), visibleRelTypes: new Set() })
   const [showFilters, setShowFilters] = useState(false)
+  const [connectMode, setConnectMode] = useState(false)
+  const [connectSource, setConnectSource] = useState(null)
   const [history, setHistory] = useState(() => loadHistory())
   const [showHistory, setShowHistory] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
@@ -73,6 +75,8 @@ function App() {
   const containerRef = useRef(null)
   const chatEndRef = useRef(null)
   const fileInputRef = useRef(null)
+  const connectModeRef = useRef(false)
+  const connectSourceRef = useRef(null)
 
   const config = getConfig()
   const driver = useRef(
@@ -424,10 +428,6 @@ function App() {
       cyRef.current = null
     }
 
-    if (elements.length === 0) {
-      return false
-    }
-
     cyRef.current = cytoscape({
       container: containerRef.current,
       elements,
@@ -471,7 +471,7 @@ function App() {
           }
         }
       ],
-      layout: {
+      layout: elements.length > 0 ? {
         name: 'cose',
         padding: 20,
         animate: true,
@@ -486,18 +486,43 @@ function App() {
         initialTemp: 200,
         coolingFactor: 0.95,
         minTemp: 1.0
-      },
+      } : undefined,
       wheelSensitivity: 0.2
     })
 
     cyRef.current.on('tap', 'node', (evt) => {
+      if (connectModeRef.current && cyRef.current) {
+        const targetId = evt.target.id()
+        if (!connectSourceRef.current) {
+          connectSourceRef.current = targetId
+          evt.target.select()
+          return
+        }
+        if (connectSourceRef.current === targetId) {
+          connectSourceRef.current = null
+          cyRef.current.$(':selected').unselect()
+          return
+        }
+        const type = window.prompt('Relationship type:', 'RELATED_TO')
+        if (type) {
+          const edgeId = `r${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+          cyRef.current.add({
+            group: 'edges',
+            data: { id: edgeId, source: connectSourceRef.current, target: targetId, label: type, properties: {}, type: 'relationship' }
+          })
+        }
+        connectSourceRef.current = null
+        cyRef.current.$(':selected').unselect()
+        updateFiltersFromGraph()
+        return
+      }
       const data = evt.target.data()
-      setSelected({ type: 'Node', label: data.label, properties: data.properties })
+      setSelected({ type: 'Node', id: evt.target.id(), label: data.label, properties: data.properties })
     })
 
     cyRef.current.on('tap', 'edge', (evt) => {
       const data = evt.target.data()
-      setSelected({ type: 'Relationship', label: data.label, properties: data.properties })
+      setSelected({ type: 'Relationship', id: evt.target.id(), label: data.label, properties: data.properties })
     })
 
     cyRef.current.on('tap', (evt) => {
@@ -506,6 +531,13 @@ function App() {
       }
     })
 
+    updateFiltersFromGraph()
+
+    return true
+  }
+
+  const updateFiltersFromGraph = () => {
+    if (!cyRef.current) return
     const labelsSet = new Set()
     const relTypesSet = new Set()
     cyRef.current.nodes().forEach((node) => {
@@ -522,8 +554,84 @@ function App() {
       visibleLabels: new Set(labelsSet),
       visibleRelTypes: new Set(relTypesSet),
     })
+  }
 
-    return true
+  const createNewGraph = () => {
+    setError(null)
+    setSelected(null)
+    setTableData(null)
+    setGraphName(null)
+    setStatus('New empty graph')
+    renderElements([])
+    setHasGraph(true)
+    setViewMode('graph')
+  }
+
+  const clearGraph = () => {
+    if (!cyRef.current) return
+    cyRef.current.elements().remove()
+    setSelected(null)
+    setTableData(null)
+    setGraphName(null)
+    setStatus('Graph cleared')
+    setHasGraph(false)
+    setStats(null)
+    setFilters({ labels: [], relTypes: [], visibleLabels: new Set(), visibleRelTypes: new Set() })
+  }
+
+  const addNode = () => {
+    if (!cyRef.current) return
+    const label = window.prompt('Node label:', 'Node')?.trim()
+    if (!label) return
+    const id = `n${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const color = labelColor(label)
+    let position = { x: 0, y: 0 }
+    try {
+      const extent = cyRef.current.extent()
+      position = { x: (extent.x1 + extent.x2) / 2, y: (extent.y1 + extent.y2) / 2 }
+    } catch {}
+    cyRef.current.add({
+      group: 'nodes',
+      data: { id, label, color, properties: {}, type: 'node' },
+      position,
+    })
+    updateFiltersFromGraph()
+    setHasGraph(true)
+  }
+
+  const deleteSelected = () => {
+    if (!cyRef.current || !selected || !selected.id) return
+    const ele = cyRef.current.getElementById(selected.id)
+    if (ele.length > 0) {
+      ele.remove()
+      updateFiltersFromGraph()
+    }
+    setSelected(null)
+  }
+
+  const editSelectedProperties = () => {
+    if (!cyRef.current || !selected || !selected.id) return
+    const ele = cyRef.current.getElementById(selected.id)
+    if (ele.length === 0) return
+    const current = ele.data('properties') || {}
+    const input = window.prompt('Edit properties as JSON:', JSON.stringify(current))
+    if (input === null) return
+    const trimmed = input.trim()
+    if (trimmed === '' || trimmed === JSON.stringify(current)) return
+    try {
+      const next = JSON.parse(trimmed)
+      if (typeof next !== 'object' || next === null) {
+        throw new Error('Properties must be a JSON object')
+      }
+      ele.data('properties', next)
+      setSelected((prev) => ({ ...prev, properties: next }))
+    } catch (err) {
+      let message = `Invalid JSON: ${err.message}. Use double quotes for keys and string values, e.g. {"name": "Siemens"}.`
+      if (trimmed.includes("'")) {
+        message = `Single quotes are not valid JSON. Use double quotes, e.g. {"name": "Siemens"}.`
+      }
+      setError(message)
+    }
   }
 
   const renderGraph = (records) => renderElements(buildElements(records))
@@ -574,6 +682,65 @@ function App() {
             onChange={handleLoadGraph}
             className="hidden-file-input"
           />
+          <button
+            type="button"
+            className="icon-button"
+            onClick={createNewGraph}
+            title="Create a new empty graph"
+          >
+            New
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={addNode}
+            disabled={!hasGraph}
+            title="Add a node"
+          >
+            Add Node
+          </button>
+          <button
+            type="button"
+            className={`icon-button ${connectMode ? 'active' : ''}`}
+            onClick={() => {
+              const next = !connectModeRef.current
+              connectModeRef.current = next
+              connectSourceRef.current = null
+              setConnectMode(next)
+              if (cyRef.current) cyRef.current.$(':selected').unselect()
+            }}
+            disabled={!hasGraph}
+            title="Click two nodes to connect them"
+          >
+            Connect
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={editSelectedProperties}
+            disabled={!selected}
+            title="Edit selected element properties"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={deleteSelected}
+            disabled={!selected}
+            title="Delete selected node or edge"
+          >
+            Delete
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={clearGraph}
+            disabled={!hasGraph}
+            title="Clear all nodes and edges"
+          >
+            Clear
+          </button>
           <button
             type="button"
             className={`icon-button ${chatOpen ? 'active' : ''}`}
