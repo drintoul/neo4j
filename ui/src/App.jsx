@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import neo4j from 'neo4j-driver'
 import cytoscape from 'cytoscape'
 
-const DEFAULT_QUERY = 'MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100'
+const DEFAULT_QUERY = ''
 const HISTORY_KEY = 'neo4j_query_history'
 const THEME_KEY = 'neo4j_theme'
 
@@ -47,12 +47,13 @@ function saveHistory(items) {
 
 function App() {
   const [query, setQuery] = useState(DEFAULT_QUERY)
-  const [status, setStatus] = useState('Ready')
+  const [status, setStatus] = useState('Load a saved graph or run a Cypher query')
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
   const [tableData, setTableData] = useState(null)
   const [hasGraph, setHasGraph] = useState(false)
   const [viewMode, setViewMode] = useState('graph')
+  const [graphName, setGraphName] = useState(null)
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [theme, setTheme] = useState(() => {
@@ -61,6 +62,8 @@ function App() {
   })
   const [stats, setStats] = useState(null)
   const [showStats, setShowStats] = useState(false)
+  const [filters, setFilters] = useState({ labels: [], relTypes: [], visibleLabels: new Set(), visibleRelTypes: new Set() })
+  const [showFilters, setShowFilters] = useState(false)
   const [history, setHistory] = useState(() => loadHistory())
   const [showHistory, setShowHistory] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
@@ -69,6 +72,7 @@ function App() {
   const cyRef = useRef(null)
   const containerRef = useRef(null)
   const chatEndRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   const config = getConfig()
   const driver = useRef(
@@ -162,6 +166,42 @@ function App() {
     setStats(next)
   }
 
+  useEffect(() => {
+    if (!cyRef.current) return
+    const cy = cyRef.current
+    cy.batch(() => {
+      cy.nodes().forEach((node) => {
+        const nodeLabels = (node.data('label') || '').split(':')
+        const visible = nodeLabels.some((label) => filters.visibleLabels.has(label))
+        node.style('display', visible ? 'element' : 'none')
+      })
+      cy.edges().forEach((edge) => {
+        const type = edge.data('label')
+        const sourceHidden = edge.source().style('display') === 'none'
+        const targetHidden = edge.target().style('display') === 'none'
+        const typeVisible = !type || filters.visibleRelTypes.has(type)
+        edge.style('display', !sourceHidden && !targetHidden && typeVisible ? 'element' : 'none')
+      })
+    })
+  }, [filters.visibleLabels, filters.visibleRelTypes])
+
+  useEffect(() => {
+    if (!cyRef.current) return
+    const cy = cyRef.current
+    const relTypesSet = new Set()
+    cy.edges().forEach((edge) => {
+      const sourceLabels = (edge.source().data('label') || '').split(':')
+      const targetLabels = (edge.target().data('label') || '').split(':')
+      const sourceVisible = sourceLabels.some((label) => filters.visibleLabels.has(label))
+      const targetVisible = targetLabels.some((label) => filters.visibleLabels.has(label))
+      if (sourceVisible && targetVisible) {
+        const type = edge.data('label')
+        if (type) relTypesSet.add(type)
+      }
+    })
+    setFilters((prev) => ({ ...prev, relTypes: [...relTypesSet].sort() }))
+  }, [filters.visibleLabels])
+
   function addHistoryItem(item) {
     setHistory((prev) => {
       const next = [item, ...prev.filter((i) => i.text !== item.text || i.type !== item.type)]
@@ -175,12 +215,31 @@ function App() {
     saveHistory([])
   }
 
+  const toggleLabelFilter = (label) => {
+    setFilters((prev) => {
+      const next = new Set(prev.visibleLabels)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return { ...prev, visibleLabels: next }
+    })
+  }
+
+  const toggleRelTypeFilter = (type) => {
+    setFilters((prev) => {
+      const next = new Set(prev.visibleRelTypes)
+      if (next.has(type)) next.delete(type)
+      else next.add(type)
+      return { ...prev, visibleRelTypes: next }
+    })
+  }
+
   const runQuery = async (q) => {
     setLoading(true)
     setError(null)
     setStatus('Running query...')
     setSelected(null)
     setTableData(null)
+    setGraphName(null)
     setHasGraph(false)
     setViewMode('graph')
 
@@ -278,7 +337,48 @@ function App() {
     runQuery(cypher)
   }
 
-  const renderGraph = (records) => {
+  const saveGraph = () => {
+    if (!cyRef.current || cyRef.current.elements().length === 0) return
+    const defaultName = graphName || `graph-${Date.now()}.json`
+    const filename = window.prompt('Save graph as:', defaultName)
+    if (!filename) return
+    const payload = cyRef.current.elements().jsons()
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename.endsWith('.json') ? filename : `${filename}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleLoadGraph = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const elements = JSON.parse(text)
+      if (!Array.isArray(elements) || elements.length === 0) {
+        throw new Error('File does not contain a valid graph')
+      }
+      setError(null)
+      setSelected(null)
+      setTableData(null)
+      setGraphName(file.name)
+      setHasGraph(true)
+      setViewMode('graph')
+      renderElements(elements)
+      setStatus(`Loaded ${elements.length} elements`)
+    } catch (err) {
+      setError(`Failed to load graph: ${err.message}`)
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  const buildElements = (records) => {
     const nodes = new Map()
     const edges = []
 
@@ -315,12 +415,15 @@ function App() {
       })
     })
 
+    return [...nodes.values(), ...edges]
+  }
+
+  const renderElements = (elements) => {
     if (cyRef.current) {
       cyRef.current.destroy()
       cyRef.current = null
     }
 
-    const elements = [...nodes.values(), ...edges]
     if (elements.length === 0) {
       return false
     }
@@ -403,13 +506,32 @@ function App() {
       }
     })
 
+    const labelsSet = new Set()
+    const relTypesSet = new Set()
+    cyRef.current.nodes().forEach((node) => {
+      const label = node.data('label')
+      if (label) label.split(':').forEach((l) => labelsSet.add(l))
+    })
+    cyRef.current.edges().forEach((edge) => {
+      const type = edge.data('label')
+      if (type) relTypesSet.add(type)
+    })
+    setFilters({
+      labels: [...labelsSet].sort(),
+      relTypes: [...relTypesSet].sort(),
+      visibleLabels: new Set(labelsSet),
+      visibleRelTypes: new Set(relTypesSet),
+    })
+
     return true
   }
+
+  const renderGraph = (records) => renderElements(buildElements(records))
 
   return (
     <div className="app">
       <header>
-        <h1>Neo4j Graph Visualization</h1>
+        <h1>{graphName ? `Graph: ${graphName}` : 'Neo4j Graph Visualization'}</h1>
         <form
           className="query-bar"
           onSubmit={(e) => {
@@ -423,11 +545,35 @@ function App() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Cypher query..."
           />
-          <button type="submit" disabled={loading}>
+          <button type="submit" disabled={loading || !query.trim()}>
             {loading ? 'Running...' : 'Run'}
           </button>
         </form>
         <div className="header-actions">
+          <button
+            type="button"
+            className="icon-button"
+            onClick={saveGraph}
+            disabled={!hasGraph}
+            title="Save graph to JSON"
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => fileInputRef.current?.click()}
+            title="Load graph from JSON"
+          >
+            Load
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            onChange={handleLoadGraph}
+            className="hidden-file-input"
+          />
           <button
             type="button"
             className={`icon-button ${chatOpen ? 'active' : ''}`}
@@ -452,6 +598,23 @@ function App() {
           >
             Stats
           </button>
+          <button
+            type="button"
+            className={`icon-button ${showFilters ? 'active' : ''}`}
+            onClick={() => setShowFilters((s) => !s)}
+            title="Filter nodes and relationships"
+          >
+            Filters
+          </button>
+          <a
+            href="http://localhost:7474"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="icon-button"
+            title="Open Neo4j Browser"
+          >
+            Neo4j Browser
+          </a>
           <button
             type="button"
             className="icon-button"
@@ -489,6 +652,7 @@ function App() {
         {loading && <div className="loading">Loading graph...</div>}
         <div className={`status ${error ? 'error' : ''}`}>
           {error ? `Error: ${error}` : status}
+          {graphName && <span className="graph-name"> — {graphName}</span>}
           <span className="help-text"> — Click nodes/edges for details. Drag to pan, scroll to zoom.</span>
         </div>
         {showStats && stats && (
@@ -529,6 +693,52 @@ function App() {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+        {showFilters && hasGraph && (
+          <div className="panel filter-panel">
+            <button className="panel-close" onClick={() => setShowFilters(false)}>
+              x
+            </button>
+            <h3>Filters</h3>
+            {filters.labels.length > 0 && (
+              <>
+                <h4>Labels</h4>
+                <ul className="filter-list">
+                  {filters.labels.map((label) => (
+                    <li key={label}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={filters.visibleLabels.has(label)}
+                          onChange={() => toggleLabelFilter(label)}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {filters.relTypes.length > 0 && (
+              <>
+                <h4>Relationships</h4>
+                <ul className="filter-list">
+                  {filters.relTypes.map((type) => (
+                    <li key={type}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={filters.visibleRelTypes.has(type)}
+                          onChange={() => toggleRelTypeFilter(type)}
+                        />
+                        <span>{type}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </div>
         )}
         {viewMode === 'table' && tableData && tableData.length > 0 && (
