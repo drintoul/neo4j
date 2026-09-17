@@ -23,7 +23,7 @@ docker compose up -d
 ## Architecture
 
 ```mermaid
-graph LR
+graph TD
     Browser[Neo4j Browser :7474]
     UI[React UI :UI_PORT]
     MCPClient[MCP Client :MCP_PORT]
