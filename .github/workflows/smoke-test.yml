@@ -13,33 +13,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate Compose file
-        run: docker compose config > /dev/null
-
       - name: Copy environment file
         run: cp .env.example .env
 
-      - name: Build and start stack
-        run: docker compose up -d --build
+      - name: Validate Compose file
+        run: docker compose config > /dev/null
 
-      - name: Wait for services to be healthy
-        run: |
-          for service in neo4j llm-proxy ui mcp; do
-            echo "Waiting for $service..."
-            for i in {1..30}; do
-              if docker compose ps "$service" --format json | grep -q '"Health":"healthy"'; then
-                echo "$service is healthy"
-                break 1
-              fi
-              sleep 2
-            done
-          done
+      - name: Build and start stack
+        run: docker compose up -d --build --wait --wait-timeout 120
 
       - name: Check public health endpoints
         run: |
-          curl -fsS http://127.0.0.1:3000/ > /dev/null
-          curl -fsS http://127.0.0.1:3005/health > /dev/null
-          curl -fsS http://127.0.0.1:3001/ > /dev/null
+          curl -fsS --retry 5 --retry-delay 2 http://127.0.0.1:3000/ > /dev/null
+          curl -fsS --retry 5 --retry-delay 2 http://127.0.0.1:3005/health > /dev/null
+          curl -fsS --retry 5 --retry-delay 2 http://127.0.0.1:3001/ > /dev/null
 
       - name: Tear down stack
         if: always()

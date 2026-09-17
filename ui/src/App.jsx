@@ -114,19 +114,46 @@ function App() {
 
   async function fetchStats() {
     const session = driver.current.session()
-    const next = { nodeCount: 0, edgeCount: 0, labels: [], relationshipTypes: [] }
+    const next = {
+      nodeCount: 0,
+      edgeCount: 0,
+      propertyKeyCount: 0,
+      labels: [],
+      relationshipTypes: [],
+      labelCounts: [],
+      relationshipCounts: [],
+    }
     try {
-      const nodesResult = await session.run('MATCH (n) RETURN count(n) AS count')
-      next.nodeCount = nodesResult.records[0]?.get('count').toInt() || 0
+      const nodeCountResult = await session.run('MATCH (n) RETURN count(n) AS nodeCount')
+      next.nodeCount = nodeCountResult.records[0].get('nodeCount').toNumber()
 
-      const edgesResult = await session.run('MATCH ()-[r]->() RETURN count(r) AS count')
-      next.edgeCount = edgesResult.records[0]?.get('count').toInt() || 0
+      const edgeCountResult = await session.run('MATCH ()-[r]->() RETURN count(r) AS edgeCount')
+      next.edgeCount = edgeCountResult.records[0].get('edgeCount').toNumber()
+
+      const propertyKeysResult = await session.run('CALL db.propertyKeys() YIELD propertyKey RETURN count(propertyKey) AS propertyKeyCount')
+      next.propertyKeyCount = propertyKeysResult.records[0].get('propertyKeyCount').toNumber()
 
       const labelsResult = await session.run('CALL db.labels() YIELD label RETURN label ORDER BY label')
       next.labels = labelsResult.records.map((r) => r.get('label'))
 
       const relTypesResult = await session.run('CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType ORDER BY relationshipType')
       next.relationshipTypes = relTypesResult.records.map((r) => r.get('relationshipType'))
+
+      const labelCountsResult = await session.run(
+        'MATCH (n) UNWIND labels(n) AS label RETURN label, count(*) AS count ORDER BY count DESC, label ASC'
+      )
+      next.labelCounts = labelCountsResult.records.map((r) => ({
+        label: r.get('label'),
+        count: r.get('count').toNumber(),
+      }))
+
+      const relCountsResult = await session.run(
+        'MATCH ()-[r]->() RETURN type(r) AS type, count(*) AS count ORDER BY count DESC, type ASC'
+      )
+      next.relationshipCounts = relCountsResult.records.map((r) => ({
+        type: r.get('type'),
+        count: r.get('count').toNumber(),
+      }))
     } catch (err) {
       console.error('Failed to fetch stats:', err)
     } finally {
@@ -479,20 +506,26 @@ function App() {
                 <div className="stat-value">{stats.edgeCount}</div>
                 <div className="stat-label">Edges</div>
               </div>
+              <div className="stat-card">
+                <div className="stat-value">{stats.propertyKeyCount}</div>
+                <div className="stat-label">Properties</div>
+              </div>
             </div>
             <h4>Labels</h4>
             <ul className="stats-list">
-              {stats.labels.map((label) => (
+              {stats.labelCounts.map(({ label, count }) => (
                 <li key={label}>
                   <span>{label}</span>
+                  <span className="stat-count">{count}</span>
                 </li>
               ))}
             </ul>
             <h4>Relationships</h4>
             <ul className="stats-list">
-              {stats.relationshipTypes.map((type) => (
+              {stats.relationshipCounts.map(({ type, count }) => (
                 <li key={type}>
                   <span>{type}</span>
+                  <span className="stat-count">{count}</span>
                 </li>
               ))}
             </ul>

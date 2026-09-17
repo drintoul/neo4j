@@ -312,7 +312,7 @@ main {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 0.75rem;
   margin-bottom: 1rem;
 }
@@ -335,6 +335,12 @@ main {
   font-size: 0.7rem;
   color: var(--text-muted);
   margin-top: 0.25rem;
+}
+
+.stat-count {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .stats-list {
